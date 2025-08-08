@@ -17,36 +17,37 @@ win = pg.GraphicsLayoutWidget(title="BTCUSD Live Candlestick Chart")
 win.resize(1000, 600)
 plot = win.addPlot()
 plot.showGrid(x=True, y=True)
+plot.setLabel('left', 'Price')
+plot.setLabel('bottom', 'Time')
 win.show()
 
-# Create a text item for custom info (e.g., last price)
-custom_text = pg.TextItem(text="Loading...", color='w', anchor=(0, 0))
-plot.addItem(custom_text)
-
-# Fetch candles from MT5
+# Fetch latest candles
 def fetch_candles():
     rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, n_candles)
     df = pd.DataFrame(rates)
     df['time'] = pd.to_datetime(df['time'], unit='s')
     return df
 
-# Draw the chart and update custom text
+# Detect swing highs/lows
+def detect_swings(df, lookback=3):
+    highs = df['high']
+    lows = df['low']
+    swing_highs = []
+    swing_lows = []
+
+    for i in range(lookback, len(df) - lookback):
+        if highs[i] == max(highs[i - lookback:i + lookback + 1]):
+            swing_highs.append((i, highs[i]))
+        if lows[i] == min(lows[i - lookback:i + lookback + 1]):
+            swing_lows.append((i, lows[i]))
+
+    return swing_highs, swing_lows
+
+# Draw chart + trendlines
 def draw_chart():
     df = fetch_candles()
     plot.clear()
 
-    # Re-add the text item after clearing
-    plot.addItem(custom_text)
-
-    # Update text content
-    last_price = df['close'].iloc[-1]
-    high_price = df['high'].max()
-    custom_text.setText(f"Last: {last_price:.2f}\nHigh: {high_price:.2f}")
-
-    # Set position in plot coordinates (left-most candle, top price)
-    custom_text.setPos(0, high_price)
-
-    # Draw candles
     for i in range(len(df)):
         t = i
         o, h, l, c = df.loc[i, ['open', 'high', 'low', 'close']]
@@ -62,14 +63,27 @@ def draw_chart():
         wick = pg.PlotDataItem([t, t], [l, h], pen=pg.mkPen(color))
         plot.addItem(wick)
 
-# Timer to update chart
+    # Detect swings
+    swing_highs, swing_lows = detect_swings(df)
+
+    # Trendline: swing highs
+    if len(swing_highs) >= 2:
+        x_vals = [swing_highs[-2][0], swing_highs[-1][0]]
+        y_vals = [swing_highs[-2][1], swing_highs[-1][1]]
+        plot.addItem(pg.PlotDataItem(x_vals, y_vals, pen=pg.mkPen('orange', width=2)))
+
+    # Trendline: swing lows
+    if len(swing_lows) >= 2:
+        x_vals = [swing_lows[-2][0], swing_lows[-1][0]]
+        y_vals = [swing_lows[-2][1], swing_lows[-1][1]]
+        plot.addItem(pg.PlotDataItem(x_vals, y_vals, pen=pg.mkPen('cyan', width=2)))
+
+# Timer to refresh every 10 seconds
 timer = QtCore.QTimer()
 timer.timeout.connect(draw_chart)
-timer.start(1000)  # Update every 1 second
+timer.start(1000)
 
-# Initial draw and start app
 draw_chart()
 app.exec_()
 
-# Shutdown MT5
 mt5.shutdown()
