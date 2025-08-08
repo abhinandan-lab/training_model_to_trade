@@ -1,0 +1,32 @@
+✅ Week 1 – Data & Charting Setup
+Goal: Set up MT5, get BTCUSD data, stream live prices, build real-time candlestick chart with drawing features.
+
+Tasks:
+ Install MetaTrader 5 terminal and connect to demo account
+
+ Install MetaTrader5 Python package and test API connection
+
+ Pull historical BTCUSD OHLC data for multiple timeframes (1m, 5m, 15m, 1h)
+
+ Stream live tick/candle data using MT5 API
+
+ Store and cache candles in pandas DataFrame
+
+ Build live candlestick chart using plotly or PyQtGraph
+
+ Add basic chart overlays:
+
+Trendlines (basic slope or HL/LL zones, swing/log swing high, horizontal lines)
+
+Support/Resistance zones (based on candle structure or fractals)
+
+✅ Deliverables:
+Python script to pull and save BTCUSD candles
+
+Real-time updating candle chart with auto-drawn S/R and trendlines
+
+One-click script to launch this GUI with BTCUSD data
+
+
+
+Stable-Baselines3 (PyTorch)
