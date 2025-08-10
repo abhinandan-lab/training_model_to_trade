@@ -11,7 +11,7 @@ if not mt5.initialize():
     exit()
 
 symbol = "BTCUSD"
-timeframe = mt5.TIMEFRAME_M1
+timeframe = mt5.TIMEFRAME_M5
 n_candles = 100
 
 # Setup PyQt application
@@ -227,7 +227,7 @@ def calculate_data_hash(df):
         return None
     
     # Hash based on last few rows to detect changes efficiently
-    last_rows = df.tail(5)  # Check last 5 candles for changes
+    last_rows = df.tail(2)  # Check last 2 candles for changes
     return hash(tuple(
         (row['time'].timestamp(), row['open'], row['high'], row['low'], row['close'])
         for _, row in last_rows.iterrows()

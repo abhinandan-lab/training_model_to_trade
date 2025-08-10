@@ -1,0 +1,317 @@
+import MetaTrader5 as mt5
+import pandas as pd
+import pyqtgraph as pg
+from pyqtgraph.Qt import QtCore, QtWidgets
+import numpy as np
+from collections import deque
+
+# Initialize MT5
+if not mt5.initialize():
+    print("MT5 initialization failed")
+    exit()
+
+symbol = "BTCUSD"
+timeframe = mt5.TIMEFRAME_M5
+n_candles = 400
+
+# Setup PyQt application
+app = QtWidgets.QApplication([])
+
+# Create main window
+win = pg.GraphicsLayoutWidget(title="BTCUSD Live Chart")
+win.resize(1200, 700)
+win.show()
+
+# Create plot
+plot = win.addPlot(title="BTCUSD Candlestick Chart")
+plot.showGrid(x=True, y=True)
+
+# Create info label
+info_label = pg.LabelItem(justify='left')
+win.addItem(info_label, row=0, col=0)
+info_label.setText("Loading data...")
+
+class CandlestickRenderer:
+    """Efficient candlestick renderer that updates incrementally"""
+    
+    def __init__(self, plot_widget):
+        self.plot = plot_widget
+        self.candles = deque(maxlen=n_candles)  # Store candle data
+        self.wick_items = deque(maxlen=n_candles)  # Store wick plot items
+        self.body_items = deque(maxlen=n_candles)  # Store body rect items
+        self.last_timestamps = deque(maxlen=n_candles)  # Track timestamps
+        self.initialized = False
+    
+    def create_candle_items(self, x, open_val, close_val, low_val, high_val):
+        """Create wick and body items for a single candle"""
+        color = 'g' if close_val >= open_val else 'r'
+        
+        # Create wick line
+        wick = self.plot.plot([x, x], [low_val, high_val], 
+                             pen=pg.mkPen(color, width=1))
+        
+        # Create body rectangle
+        body_height = abs(close_val - open_val)
+        if body_height > 0:
+            body_y = min(open_val, close_val)
+            rect = pg.QtWidgets.QGraphicsRectItem(x-0.3, body_y, 0.6, body_height)
+            rect.setPen(pg.mkPen(color, width=1))
+            rect.setBrush(pg.mkBrush(color))
+            self.plot.addItem(rect)
+        else:
+            # Doji - horizontal line
+            rect = self.plot.plot([x-0.3, x+0.3], [open_val, open_val], 
+                                 pen=pg.mkPen(color, width=2))
+        
+        return wick, rect
+    
+    def update_candle_items(self, wick, body, x, open_val, close_val, low_val, high_val):
+        """Update existing candle items with new data"""
+        color = 'g' if close_val >= open_val else 'r'
+        pen = pg.mkPen(color, width=1)
+        
+        # Update wick
+        wick.setData([x, x], [low_val, high_val])
+        wick.setPen(pen)
+        
+        # Update body
+        body_height = abs(close_val - open_val)
+        if hasattr(body, 'setRect'):  # It's a QGraphicsRectItem
+            if body_height > 0:
+                body_y = min(open_val, close_val)
+                body.setRect(x-0.3, body_y, 0.6, body_height)
+                body.setPen(pen)
+                body.setBrush(pg.mkBrush(color))
+            else:
+                # Convert to doji line - need to remove rect and create line
+                self.plot.removeItem(body)
+                body = self.plot.plot([x-0.3, x+0.3], [open_val, open_val], 
+                                     pen=pg.mkPen(color, width=2))
+        else:  # It's a line item (doji or regular line)
+            if body_height > 0:
+                # Convert to rectangle
+                self.plot.removeItem(body)
+                body_y = min(open_val, close_val)
+                body = pg.QtWidgets.QGraphicsRectItem(x-0.3, body_y, 0.6, body_height)
+                body.setPen(pen)
+                body.setBrush(pg.mkBrush(color))
+                self.plot.addItem(body)
+            else:
+                # Update doji line
+                body.setData([x-0.3, x+0.3], [open_val, open_val])
+                body.setPen(pg.mkPen(color, width=2))
+        
+        return body
+    
+    def initial_render(self, df):
+        """Initial render of all candles"""
+        print("Performing initial render...")
+        
+        # Clear existing items
+        for wick in self.wick_items:
+            if wick is not None:
+                self.plot.removeItem(wick)
+        for body in self.body_items:
+            if body is not None:
+                self.plot.removeItem(body)
+        
+        self.candles.clear()
+        self.wick_items.clear()
+        self.body_items.clear()
+        self.last_timestamps.clear()
+        
+        # Render all candles
+        for i in range(len(df)):
+            row = df.iloc[i]
+            timestamp = row['time']
+            
+            wick, body = self.create_candle_items(
+                i, row['open'], row['close'], row['low'], row['high']
+            )
+            
+            self.candles.append(row)
+            self.wick_items.append(wick)
+            self.body_items.append(body)
+            self.last_timestamps.append(timestamp)
+        
+        self.initialized = True
+        print(f"Initial render complete: {len(df)} candles")
+    
+    def update_incremental(self, df):
+        """Incrementally update candles - only process new/changed data"""
+        if not self.initialized:
+            self.initial_render(df)
+            return
+        
+        new_data_count = 0
+        updated_count = 0
+        
+        # Check each candle in the new data
+        for i in range(len(df)):
+            row = df.iloc[i]
+            timestamp = row['time']
+            
+            # Check if this is a new candle or an update to existing one
+            if i < len(self.last_timestamps):
+                if self.last_timestamps[i] == timestamp:
+                    # Check if OHLC values changed (last candle update)
+                    old_row = self.candles[i]
+                    if (old_row['open'] != row['open'] or 
+                        old_row['high'] != row['high'] or 
+                        old_row['low'] != row['low'] or 
+                        old_row['close'] != row['close']):
+                        
+                        # Update existing candle
+                        self.body_items[i] = self.update_candle_items(
+                            self.wick_items[i], self.body_items[i],
+                            i, row['open'], row['close'], row['low'], row['high']
+                        )
+                        self.candles[i] = row
+                        updated_count += 1
+                else:
+                    # New candle - this shouldn't happen in our fixed-window approach
+                    # but handle it gracefully
+                    pass
+            else:
+                # Completely new candle (extending beyond current range)
+                wick, body = self.create_candle_items(
+                    i, row['open'], row['close'], row['low'], row['high']
+                )
+                
+                self.candles.append(row)
+                self.wick_items.append(wick)
+                self.body_items.append(body)
+                self.last_timestamps.append(timestamp)
+                new_data_count += 1
+        
+        if new_data_count > 0 or updated_count > 0:
+            print(f"Incremental update: {new_data_count} new, {updated_count} updated candles")
+
+# Global state for user interaction tracking
+previous_view_range = None
+user_has_moved_chart = False
+auto_range_enabled = True
+last_data_hash = None
+
+# Initialize candlestick renderer
+candlestick_renderer = CandlestickRenderer(plot)
+
+def on_view_changed():
+    """Called when user manually changes the view"""
+    global user_has_moved_chart, auto_range_enabled, previous_view_range
+    user_has_moved_chart = True
+    auto_range_enabled = False
+    previous_view_range = plot.getViewBox().viewRange()
+    print("User moved chart - auto-range disabled")
+
+# Connect view change signal once
+plot.getViewBox().sigRangeChanged.connect(on_view_changed)
+
+def fetch_data():
+    """Fetch OHLC data from MT5"""
+    try:
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, n_candles)
+        if rates is None:
+            return None
+        
+        df = pd.DataFrame(rates)
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        return df
+    except Exception as e:
+        print(f"Data fetch error: {e}")
+        return None
+
+def calculate_data_hash(df):
+    """Calculate hash of the data to detect changes"""
+    if df is None or len(df) == 0:
+        return None
+    
+    # Hash based on last few rows to detect changes efficiently
+    last_rows = df.tail(2)  # Check last 2 candles for changes
+    return hash(tuple(
+        (row['time'].timestamp(), row['open'], row['high'], row['low'], row['close'])
+        for _, row in last_rows.iterrows()
+    ))
+
+def update_chart():
+    """Update the chart with new data - optimized version"""
+    global previous_view_range, user_has_moved_chart, last_data_hash
+    
+    df = fetch_data()
+    
+    if df is None or len(df) == 0:
+        info_label.setText("Error: No data available from MT5")
+        return
+    
+    # Check if data actually changed
+    current_hash = calculate_data_hash(df)
+    if current_hash == last_data_hash:
+        print("No data changes detected, skipping update")
+        return
+    
+    last_data_hash = current_hash
+    
+    # Temporarily disconnect signal to avoid triggering during updates
+    plot.getViewBox().sigRangeChanged.disconnect()
+    
+    try:
+        # Store current view range if user has moved
+        stored_range = None
+        if user_has_moved_chart and previous_view_range is not None:
+            stored_range = previous_view_range.copy()
+        
+        # Perform incremental update
+        candlestick_renderer.update_incremental(df)
+        
+        # Update info label
+        last_price = df['close'].iloc[-1]
+        high_price = df['high'].max()
+        low_price = df['low'].min() 
+        first_price = df['open'].iloc[0]
+        
+        change = last_price - first_price
+        change_pct = (change / first_price) * 100 if first_price != 0 else 0
+        
+        info_text = (
+            f"<span style='color: white; font-size: 12pt; background-color: rgba(0,0,0,150);'>"
+            f"<b>{symbol}</b><br>"
+            f"Last: ${last_price:.2f}<br>"
+            f"High: ${high_price:.2f}<br>"
+            f"Low: ${low_price:.2f}<br>"
+            f"Change: {change:+.2f} ({change_pct:+.2f}%)"
+            f"</span>"
+        )
+        
+        info_label.setText(info_text)
+        
+        # Handle view range - restore user's position or auto-range
+        if user_has_moved_chart and stored_range is not None:
+            plot.getViewBox().setRange(xRange=stored_range[0], yRange=stored_range[1], padding=0)
+        elif not user_has_moved_chart:
+            # Only auto-range if user hasn't moved the chart
+            plot.autoRange()
+            previous_view_range = plot.getViewBox().viewRange()
+        
+        print(f"Chart updated efficiently - Last price: ${last_price:.2f}")
+    
+    finally:
+        # Always reconnect the signal
+        plot.getViewBox().sigRangeChanged.connect(on_view_changed)
+
+# Create timer for updates
+timer = QtCore.QTimer()
+timer.timeout.connect(update_chart)
+timer.start(500)  # Update every 2 seconds
+
+# Initial update
+update_chart()
+
+# Run application
+try:
+    app.exec_()
+except KeyboardInterrupt:
+    print("Application interrupted")
+finally:
+    timer.stop()
+    mt5.shutdown()
+    print("MT5 connection closed")
